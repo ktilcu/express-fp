@@ -1,16 +1,16 @@
-import * as array from 'fp-ts/lib/Array';
+import * as E from 'fp-ts/lib/Either';
 import * as option from 'fp-ts/lib/Option';
 import * as t from 'io-ts';
-import { formatValidationError } from 'io-ts-reporters/target/src';
+import { reporter } from 'io-ts-reporters/target/src';
 
 import Option = option.Option;
 
-const formatValidationErrorAll = (validationErrors: t.ValidationError[]) =>
-    array.catOptions(validationErrors.map(formatValidationError));
-
 export const formatValidationErrors = (context: string) => (
-    validationErrors: t.ValidationError[],
-) => `Validation errors for ${context}: ${formatValidationErrorAll(validationErrors).join(', ')}`;
+    validationErrors: t.ValidationError[]
+) =>
+    `Validation errors for ${context}: ${reporter(
+        E.left(validationErrors)
+    ).join(', ')}`;
 
 export class SafeMutableMap<K, V> {
     map: Map<K, V>;

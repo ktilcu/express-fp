@@ -1,14 +1,18 @@
-import * as contentType from 'content-type'
+import * as contentType from 'content-type';
 import * as express from 'express';
 import { Result } from 'express-result-types/target/result';
-import { applyResultToExpress, ExpressRequestSession } from 'express-result-types/target/wrap';
+import {
+    applyResultToExpress,
+    ExpressRequestSession
+} from 'express-result-types/target/wrap';
 import * as either from 'fp-ts/lib/Either';
+import { pipe } from 'fp-ts/lib/pipeable';
 import * as t from 'io-ts';
 
 import { wrapAsyncRequestHandler } from './helpers/express';
+import { SafeMutableMap } from './helpers/other';
 
 import Either = either.Either;
-import { SafeMutableMap } from './helpers/other';
 
 export class JsValue {
     constructor(private value: {}) {}
@@ -20,11 +24,11 @@ export class JsValue {
 }
 
 enum Header {
-    ContentType = 'Content-Type',
+    ContentType = 'Content-Type'
 }
 
 enum ContentType {
-    ApplicationJson = 'application/json',
+    ApplicationJson = 'application/json'
 }
 
 // https://www.playframework.com/documentation/2.6.x/ScalaBodyParsers#The-default-body-parser
@@ -38,25 +42,32 @@ export class AnyContent {
     }
 
     asJson(): Either<string, JsValue> {
-        return either.tryCatch(() => contentType.parse(this.req))
-        .mapLeft(error => `Cannot parse ${Header.ContentType} header: ${error.message}`)
-        .chain(parsed =>
-          parsed.type !== ContentType.ApplicationJson
-              ? either.left(
-                `Expecting request header '${Header.ContentType}' to have MIME type '${ContentType.ApplicationJson}' but got '${parsed.type}'.`,
-              )
-              : either.right(contentType)
-        )
-        .chain(() =>
-            either.tryCatch((): {} =>
-                JSON.parse(
-                    // TODO: How to enforce string? Don't use body parser middleware?
-                    this.req.body,
+        return pipe(
+            either.tryCatch(
+                () => contentType.parse(this.req),
+                ( e ) => (e instanceof Error ? e : new Error('parsing error'))
+            ),
+            either.mapLeft(
+                error =>
+                    `Cannot parse ${Header.ContentType} header: ${error.message}`
+            ),
+            either.chain(parsed =>
+                parsed.type !== ContentType.ApplicationJson
+                    ? either.left(
+                          `Expecting request header '${Header.ContentType}' to have MIME type '${ContentType.ApplicationJson}' but got '${parsed.type}'.`
+                      )
+                    : either.right(contentType)
+            ),
+            either.chain(() =>
+                pipe(
+                    either.parseJSON(this.req.body, either.toError),
+                    either.map((json) => new JsValue(json as {})),
+                    either.mapLeft(
+                        error => `JSON parsing error: ${error.message}`
+                    )
                 )
             )
-            .map(json => new JsValue(json))
-            .mapLeft(error => `JSON parsing error: ${error.message}`)
-        )
+        );
     }
 }
 
@@ -71,7 +82,7 @@ export class SafeRequest {
     // http://expressjs.com/en/api.html#req.query
     query = (() => {
         // We presume Express is using the default query string parser, Node's native `querystring`.
-        const query: { [key: string]: string | string[] } = this.req.query;
+        const query = this.req.query;
 
         return new SafeMutableMap(Object.entries(query));
     })();
@@ -80,16 +91,20 @@ export class SafeRequest {
         const maybeSessionData: ExpressRequestSession['data'] | undefined =
             this.req.session !== undefined
                 ? // We presume the session was defined using `Result.withSession`.
-                  this.req.session.data as ExpressRequestSession['data']
+                  (this.req.session.data as ExpressRequestSession['data'])
                 : undefined;
 
         return new SafeMutableMap(
-            Object.entries(maybeSessionData !== undefined ? maybeSessionData : {}),
+            Object.entries(
+                maybeSessionData !== undefined ? maybeSessionData : {}
+            )
         );
     })();
 }
 export type SafeRequestHandler = (req: SafeRequest) => Result;
-export type wrap = (safeRequestHandler: SafeRequestHandler) => express.RequestHandler;
+export type wrap = (
+    safeRequestHandler: SafeRequestHandler
+) => express.RequestHandler;
 export const wrap: wrap = safeRequestHandler => (req, res) => {
     const safeRequest = new SafeRequest(req);
     const result = safeRequestHandler(safeRequest);
@@ -97,7 +112,9 @@ export const wrap: wrap = safeRequestHandler => (req, res) => {
 };
 
 export type SafeRequestHandlerAsync = (req: SafeRequest) => Promise<Result>;
-export type wrapAsync = (safeRequestHandler: SafeRequestHandlerAsync) => express.RequestHandler;
+export type wrapAsync = (
+    safeRequestHandler: SafeRequestHandlerAsync
+) => express.RequestHandler;
 export const wrapAsync: wrapAsync = safeRequestHandler =>
     wrapAsyncRequestHandler((req, res) => {
         const safeRequest = new SafeRequest(req);

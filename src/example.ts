@@ -1,13 +1,15 @@
-import * as bodyParser from 'body-parser';
+import { text } from 'body-parser';
 import * as express from 'express';
 import {
     BadRequest,
     JsValue,
     jsValueWriteable,
     Ok,
-    Result,
+    Result
 } from 'express-result-types/target/result';
 import * as session from 'express-session';
+import { apply as A, either as E, option as O } from 'fp-ts';
+import { pipe } from 'fp-ts/lib/pipeable';
 import * as http from 'http';
 import * as t from 'io-ts';
 
@@ -18,30 +20,41 @@ import { wrap } from './index';
 const app = express();
 app.use(session({ secret: 'foo' }));
 // Don't parse body using middleware. Body parsing is instead handled in the request handler.
-app.use(bodyParser.text({ type: 'application/json' }));
+app.use(text({ type: 'application/json' }));
 
-const Body = t.interface({
-    name: t.string,
+const Body = t.type({
+    name: t.string
 });
+type Body = t.TypeOf<typeof Body>;
 
-const Query = t.interface({
-    age: NumberFromString,
+const Query = t.type({
+    age: NumberFromString
 });
+type Query = t.TypeOf<typeof Query>;
 
 const requestHandler = wrap(req => {
     const jsonBody = req.body.asJson();
 
-    const maybeQuery = Query.decode({
-        age: req.query.get('age').toNullable(),
-    }).mapLeft(formatValidationErrors('query'));
-
-    const maybeBody = jsonBody.chain(jsValue =>
-        jsValue.validate(Body).mapLeft(formatValidationErrors('body')),
+    const maybeQuery = pipe(
+        Query.decode({
+            age: O.fromNullable(req.query.get('age'))
+        }),
+        E.mapLeft(formatValidationErrors('query'))
     );
 
-    return maybeQuery
-        .chain(query => maybeBody.map(body => ({ query, body })))
-        .map(({ query, body }) =>
+    const maybeBody = pipe(
+        jsonBody,
+        E.chain(jsValue =>
+            pipe(
+                jsValue.validate(Body),
+                E.mapLeft(formatValidationErrors('body'))
+            )
+        )
+    );
+
+    return pipe(
+        A.sequenceS(E.either)({ body: maybeBody, query: maybeQuery }),
+        E.map(({ query, body }) =>
             Ok.apply(
                 new JsValue({
                     // We defined the shape of the request body and the request query parameter
@@ -50,28 +63,38 @@ const requestHandler = wrap(req => {
                     // - `body.name` is type `string`
                     // - `age` is type `number`
                     name: body.name,
-                    age: query.age,
+                    age: query.age
                 }),
-                jsValueWriteable,
-            ),
+                jsValueWriteable
+            )
+        ),
+        E.getOrElse(error =>
+            BadRequest.apply(new JsValue(error), jsValueWriteable)
         )
-        .getOrElseL(error => BadRequest.apply(new JsValue(error), jsValueWriteable));
+    );
 });
 
 const sessionRequestHandler = wrap(req => {
     const maybeUserId = req.session.get('userId');
 
-    return maybeUserId.foldL(
-        () => Ok.apply(new JsValue({}), jsValueWriteable).withSession(new Map([['userId', 'foo']])),
-        userId => Ok.apply(new JsValue({ userId }), jsValueWriteable),
-    );
+    return O.fold(
+        () =>
+            Ok.apply(new JsValue({}), jsValueWriteable).withSession(
+                new Map([['userId', 'foo']])
+            ),
+        userId => Ok.apply(new JsValue({ userId }), jsValueWriteable)
+    )(maybeUserId);
 });
 
 app.post('/', requestHandler);
 app.get('/session', sessionRequestHandler);
 
 const onListen = (server: http.Server) => {
-    const { port } = server.address();
+    const address = server.address();
+    const port =
+        address === null ? address :
+        typeof address === 'string' ? address :
+        address.port;
 
     console.log(`Server running on port ${port}`);
 };
